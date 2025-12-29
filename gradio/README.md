@@ -13,14 +13,16 @@
 
 2. Download [NotaGen-X](https://huggingface.co/ElectricAlexis/NotaGen/blob/main/weights_notagenx_p_size_16_p_length_1024_p_layers_20_h_size_1280.pth) and put it under ```gradio/```.
 
-3. run ```demo.py```:
+3. Download and setup musescore （https://musescore.org/zh-hans/download/musescore.msi） 
+
+4. run ```app.py```:
 
   ```
   cd gradio/
-  python demo.py
+  python app.py
   ```
 
-4. Then you can view the demo page at 127.0.0.1:7861.
+5. Then you can view the demo page at 127.0.0.1:7861.
 
   <p align="center">
   <img src="illustration.png" alt="NotaGen Gradio Demo">
