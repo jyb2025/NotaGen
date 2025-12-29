@@ -5,7 +5,7 @@
   ```
   conda create --name notagen python=3.10
   conda activate notagen
-  conda install pytorch==2.3.0 pytorch-cuda=11.8 -c pytorch -c nvidia
+  conda install pytorch==2.4.0 pytorch-cuda=11.8 -c pytorch -c nvidia
   pip install accelerate
   pip install optimum
   pip install -r requirements.txt
@@ -20,7 +20,7 @@
   python demo.py
   ```
 
-4. Then you can view the demo page at 0.0.0.0:7861.
+4. Then you can view the demo page at 127.0.0.1:7861.
 
   <p align="center">
   <img src="illustration.png" alt="NotaGen Gradio Demo">
