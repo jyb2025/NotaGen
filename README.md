@@ -22,7 +22,7 @@
   python app.py
   ```
 
-5. Then you can view the demo page at 127.0.0.1:7861.
+5. Then you can view the demo page at 127.0.0.1:7860.
 
   <p align="center">
   <img src="illustration_online.png" alt="NotaGen Gradio Demo">
