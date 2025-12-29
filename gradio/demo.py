@@ -7,6 +7,7 @@ from inference import inference_patch
 import datetime
 import subprocess
 import os
+import torch  # 添加这一行
 
 # Predefined valid combinations set
 with open('prompts.txt', 'r') as f:
@@ -229,8 +230,46 @@ button#💾-save-convert:hover {
 demo.css = css
 
 if __name__ == "__main__":
-
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7861
-    )
+    # === 添加启动诊断 ===
+    print("=" * 60)
+    print("🚀 NotaGen 启动中...")
+    print(f"📁 工作目录: {os.getcwd()}")
+    
+    # 检查 torch 是否可用
+    try:
+        print(f"🔧 PyTorch 版本: {torch.__version__}")
+        print(f"🔧 CUDA 可用: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"🔧 GPU 设备: {torch.cuda.get_device_name(0)}")
+            # 检查模型是否在GPU上
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+            print(f"🔧 GPU 总内存: {gpu_memory:.1f} GB")
+    except Exception as e:
+        print(f"⚠️  PyTorch 检查失败: {e}")
+    
+    print("=" * 60)
+    
+    # === 启动 Gradio 界面 ===
+    try:
+        demo.launch(
+            server_name="127.0.0.1",  # 改为127.0.0.1
+            server_port=7861,
+            share=False,
+            show_error=True,
+            quiet=False,
+            # 添加这些参数以解决Windows文件问题
+            prevent_thread_lock=False,
+            enable_queue=True,
+            # 设置最大文件大小（如果需要上传文件的话）
+            max_file_size="10mb"
+        )
+    except Exception as e:
+        print(f"❌ 启动失败: {e}")
+        print("尝试使用备用配置...")
+        # 备用方案：最简配置
+        demo.launch(
+            server_name="127.0.0.1",
+            server_port=7861,
+            share=False,
+            debug=False
+        )
