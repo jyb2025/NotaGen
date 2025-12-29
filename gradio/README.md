@@ -25,7 +25,7 @@
 5. Then you can view the demo page at 127.0.0.1:7861.
 
   <p align="center">
-  <img src="illustration.png" alt="NotaGen Gradio Demo">
+  <img src="illustration_online.png" alt="NotaGen Gradio Demo">
   </p>
   
   You can choose period, composer, and instrumentation as a prompt combination for NotaGen's conditional generation. After generation completes, you can save the ABC notation and MusicXML files locally.
