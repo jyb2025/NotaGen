@@ -385,3 +385,126 @@ def inference_patch(period, composer, instrumentation):
 
 if __name__ == '__main__':
     inference_patch('Classical', 'Beethoven, Ludwig van', 'Orchestral')
+
+def inference_from_tags(tags: list):
+    """
+    从标签列表生成 ABC 音乐
+    创建提示行（标签格式）
+    确保所有标签都在模型词汇表中
+    """
+    valid_tags = [tag for tag in tags if tag in model.tag_to_id]
+    if not valid_tags:        
+        valid_tags = ['classical']  # 如果没有有效标签，使用默认标签（如 ['classical']）
+    # 使用 valid_tags 创建提示行（关键修复！）
+    prompt_lines = [f'%{tag}\n' for tag in valid_tags]
+    prompt_lines.append('%end\n')
+    
+    while True:
+        failure_flag = False
+        bos_patch = [patchilizer.bos_token_id] * (PATCH_SIZE - 1) + [patchilizer.eos_token_id]
+        start_time = time.time()
+
+        prompt_patches = patchilizer.patchilize_metadata(prompt_lines)
+        byte_list = list(''.join(prompt_lines))
+        context_tunebody_byte_list = []
+        metadata_byte_list = []
+
+        print(''.join(byte_list), end='')
+
+        prompt_patches = [[ord(c) for c in patch] + [patchilizer.special_token_id] * (PATCH_SIZE - len(patch)) for patch in prompt_patches]
+        prompt_patches.insert(0, bos_patch)
+
+        input_patches = torch.tensor(prompt_patches, device=device).reshape(1, -1)
+
+        end_flag = False
+        tunebody_flag = False
+
+        with torch.inference_mode():
+            while True:
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    predicted_patch = model.generate(
+                        input_patches.unsqueeze(0),
+                        tags=valid_tags,  # ← 关键：传入标签
+                        top_k=TOP_K,
+                        top_p=TOP_P,
+                        temperature=TEMPERATURE
+                    )
+                
+                if not tunebody_flag and patchilizer.decode([predicted_patch]).startswith('[r:'):
+                    tunebody_flag = True
+                    r0_patch = torch.tensor([ord(c) for c in '[r:0/']).unsqueeze(0).to(device)
+                    temp_input_patches = torch.concat([input_patches, r0_patch], axis=-1)
+                    predicted_patch = model.generate(
+                        temp_input_patches.unsqueeze(0),
+                        tags=valid_tags,
+                        top_k=TOP_K,
+                        top_p=TOP_P,
+                        temperature=TEMPERATURE
+                    )
+                    predicted_patch = [ord(c) for c in '[r:0/'] + predicted_patch
+                
+                if predicted_patch[0] == patchilizer.bos_token_id and predicted_patch[1] == patchilizer.eos_token_id:
+                    end_flag = True
+                    break
+                
+                next_patch = patchilizer.decode([predicted_patch])
+                for char in next_patch:
+                    byte_list.append(char)
+                    if tunebody_flag:
+                        context_tunebody_byte_list.append(char)
+                    else:
+                        metadata_byte_list.append(char)
+                    print(char, end='')
+
+                patch_end_flag = False
+                for j in range(len(predicted_patch)):
+                    if patch_end_flag:
+                        predicted_patch[j] = patchilizer.special_token_id
+                    if predicted_patch[j] == patchilizer.eos_token_id:
+                        patch_end_flag = True
+
+                predicted_patch = torch.tensor([predicted_patch], device=device)
+                input_patches = torch.cat([input_patches, predicted_patch], dim=1)
+
+                if len(byte_list) > 102400:
+                    failure_flag = True
+                    break
+                if time.time() - start_time > 10 * 60:
+                    failure_flag = True
+                    break
+
+                if input_patches.shape[1] >= PATCH_LENGTH * PATCH_SIZE and not end_flag:
+                    print('Stream generating...')
+                    metadata = ''.join(metadata_byte_list)
+                    context_tunebody = ''.join(context_tunebody_byte_list)
+                    if '\n' not in context_tunebody:
+                        break
+
+                    context_tunebody_lines = context_tunebody.strip().split('\n')
+                    if not context_tunebody.endswith('\n'):
+                        context_tunebody_lines = [context_tunebody_lines[i] + '\n' for i in range(len(context_tunebody_lines) - 1)] + [context_tunebody_lines[-1]]
+                    else:
+                        context_tunebody_lines = [context_tunebody_lines[i] + '\n' for i in range(len(context_tunebody_lines))]
+
+                    cut_index = len(context_tunebody_lines) // 2
+                    abc_code_slice = metadata + ''.join(context_tunebody_lines[-cut_index:])
+                    input_patches = patchilizer.encode_generate(abc_code_slice)
+                    input_patches = [item for sublist in input_patches for item in sublist]
+                    input_patches = torch.tensor([input_patches], device=device).reshape(1, -1)
+                    context_tunebody_byte_list = list(''.join(context_tunebody_lines[-cut_index:]))
+
+            if not failure_flag:
+                abc_text = ''.join(byte_list)
+                abc_lines = abc_text.split('\n')
+                abc_lines = list(filter(None, abc_lines))
+                abc_lines = [line + '\n' for line in abc_lines]
+                try:
+                    unreduced_abc_lines = rest_unreduce(abc_lines)
+                except:
+                    failure_flag = True
+                    pass
+                else:
+                    unreduced_abc_lines = [line for line in unreduced_abc_lines if not (line.startswith('%') and not line.startswith('%%'))]
+                    unreduced_abc_lines = ['X:1\n'] + unreduced_abc_lines
+                    unreduced_abc_text = ''.join(unreduced_abc_lines)
+                    return unreduced_abc_text
