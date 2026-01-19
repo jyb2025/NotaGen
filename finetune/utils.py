@@ -10,6 +10,47 @@ from samplings import top_p_sampling, top_k_sampling, temperature_sampling
 from tokenizers import Tokenizer
 
 
+# === 新增：定义所有合法标签集合（用于校验）===
+_VALID_TAGS = {
+    # 主要流派22
+    'classical', 'jazz', 'rock', 'pop', 'folk', 'reggae', 'rap', 'country', 
+    'blues', 'electronic', 'hiphop', 'metal', 'edm', 'r&b', 'world', 'christian',
+    'children', 'disco', 'soul', 'experimental', 'latin', 'newage',
+    
+    # 技术特征36
+    'very_simple', 'simple', 'medium', 'complex', 'very_complex',
+    'very_slow', 'slow', 'medium', 'fast', 'very_fast',
+    'very_soft', 'soft', 'medium', 'loud', 'very_loud',
+    'legato', 'staccato', 'mixed',
+    'simple', 'syncopated', 'complex', 'irregular',
+    'diatonic', 'chromatic', 'modal', 'atonal', 'jazz_harmony',
+    'monophonic', 'homophonic', 'polyphonic', 'heterophonic',
+    'binary', 'ternary', 'rondo', 'theme_variations', 'through_composed',
+    
+    # 乐器相关34
+    'solo', 'duet', 'trio', 'quartet', 'small_ensemble', 'large_ensemble', 'orchestra',
+    'strings', 'woodwinds', 'brass', 'percussion', 'keyboard', 'voice', 'electronic',
+    'piano', 'guitar', 'violin', 'cello', 'flute', 'clarinet', 'viola', 'ukulele',
+    'trumpet', 'saxophone', 'drums', 'bass', 'organ', 'harp', 'dizi',
+    'accordion', 'mandolin', 'banjo', 'harmonica', 'oboe',
+    
+    # 情绪情感23
+    'happy', 'sad', 'angry', 'peaceful', 'energetic', 'melancholic', 'romantic', 'dramatic', 'gentle',
+    'calm', 'moderate', 'intense', 'passionate', 'tense',
+    'playful', 'solemn', 'mysterious', 'heroic', 'nostalgic', 'dreamy', 'aggressive', 'graceful', 'horrifying',
+    
+    # 文化地域21
+    'europe', 'north_america', 'south_america', 'asia', 'africa', 'middle_east', 'oceania',
+    'medieval', 'renaissance', 'baroque', 'classical', 'romantic', '20th_century', 'contemporary',
+    'celtic', 'flamenco', 'tango', 'samba', 'bluegrass', 'klezmer', 'gamelan',
+    
+    # 功能用途14
+    'etude', 'scale_exercise', 'recital', 'competition', 'audition', 
+    'worship', 'ceremonial', 'dance_accompaniment',
+    'background', 'focus', 'relaxation', 'meditation', 'workout', 'party'
+}
+
+
 class Patchilizer:
     def __init__(self, stream=PATCH_STREAM):
         self.stream = stream
@@ -67,15 +108,12 @@ class Patchilizer:
         
 
     def patchilize_metadata(self, metadata_lines):
-
         metadata_patches = []
         for line in metadata_lines:
             metadata_patches += self.split_patches(line)
-
         return metadata_patches
     
     def patchilize_tunebody(self, tunebody_lines, encode_mode='train'):
-
         tunebody_patches = []
         bars = self.split_bars(tunebody_lines)
         if encode_mode == 'train':
@@ -89,19 +127,41 @@ class Patchilizer:
         return tunebody_patches
 
     def encode_train(self, abc_text, patch_length=PATCH_LENGTH, patch_size=PATCH_SIZE, add_special_patches=True, cut=True):
+        # === 关键修复 1: 过滤非 ASCII 字符 (0-127) ===
+        abc_text = ''.join(c for c in abc_text if 0 <= ord(c) < 128)
+        # ==========================================
 
         lines = abc_text.split('\n')
         lines = list(filter(None, lines))
         lines = [line + '\n' for line in lines]
 
-        tunebody_index = -1
+        # === 提取标签，并只保留合法小写标签 ===
+        tags = []
+        tunebody_index = 0
         for i, line in enumerate(lines):
-            if '[V:' in line:
+            if line.startswith('%'):
+                if line.strip() == '%end':
+                    tunebody_index = i + 1
+                    break
+                tag = line[1:].strip()
+                if tag:
+                    # 转为小写并检查是否在合法集合中
+                    tag_lower = tag.lower()
+                    if tag_lower in _VALID_TAGS:
+                        tags.append(tag_lower)
+            else:
                 tunebody_index = i
                 break
 
-        metadata_lines = lines[ : tunebody_index]
-        tunebody_lines = lines[tunebody_index : ]
+        # 正确检测旋律主体起始（支持 V:1 格式）
+        if tunebody_index == 0:
+            for i, line in enumerate(lines):
+                if line.startswith('V:'):
+                    tunebody_index = i
+                    break
+
+        metadata_lines = lines[:tunebody_index]
+        tunebody_lines = lines[tunebody_index:]
 
         if self.stream:
             tunebody_lines = ['[r:' + str(line_index) + '/' + str(len(tunebody_lines) - line_index - 1) + ']' + line for line_index, line in
@@ -153,9 +213,7 @@ class Patchilizer:
             patches = metadata_patches + tunebody_patches
 
         if cut: 
-            patches = patches[ : patch_length]
-        else:  
-            pass
+            patches = patches[:patch_length]
 
         # encode to ids
         id_patches = []
@@ -163,21 +221,27 @@ class Patchilizer:
             id_patch = [ord(c) for c in patch] + [self.special_token_id] * (patch_size - len(patch))
             id_patches.append(id_patch)
 
-        return id_patches
+        return id_patches, tags  # 返回清洗后的标签
 
     def encode_generate(self, abc_code, patch_length=PATCH_LENGTH, patch_size=PATCH_SIZE, add_special_patches=True):
+        # === 关键修复 1: 过滤非 ASCII 字符 ===
+        abc_code = ''.join(c for c in abc_code if 0 <= ord(c) < 128)
+        # ===================================
 
         lines = abc_code.split('\n')
         lines = list(filter(None, lines))
     
         tunebody_index = None
         for i, line in enumerate(lines):
-            if line.startswith('[V:') or line.startswith('[r:'):
+            if line.startswith('V:') or line.startswith('[r:'):
                 tunebody_index = i
                 break
     
-        metadata_lines = lines[ : tunebody_index]
-        tunebody_lines = lines[tunebody_index : ]   
+        if tunebody_index is None:
+            tunebody_index = 0  # 默认从开头开始
+    
+        metadata_lines = lines[:tunebody_index]
+        tunebody_lines = lines[tunebody_index:]   
     
         metadata_lines = [line + '\n' for line in metadata_lines]
         if self.stream:
@@ -193,11 +257,10 @@ class Patchilizer:
     
         if add_special_patches:
             bos_patch = chr(self.bos_token_id) * (patch_size - 1) + chr(self.eos_token_id)
-
             metadata_patches = [bos_patch] + metadata_patches
     
         patches = metadata_patches + tunebody_patches
-        patches = patches[ : patch_length]
+        patches = patches[:patch_length]
 
         # encode to ids
         id_patches = []
@@ -216,8 +279,6 @@ class Patchilizer:
         """
         return ''.join(self.patch2chars(patch) for patch in patches)
 
-        
-
 
 class PatchLevelDecoder(PreTrainedModel):
     """
@@ -230,24 +291,16 @@ class PatchLevelDecoder(PreTrainedModel):
         torch.nn.init.normal_(self.patch_embedding.weight, std=0.02)
         self.base = GPT2Model(config)
 
-    def forward(self,
-                patches: torch.Tensor,
-                masks=None) -> torch.Tensor:
-        """
-        The forward pass of the patch-level decoder model.
-        :param patches: the patches to be encoded
-        :param masks: the masks for the patches
-        :return: the encoded patches
-        """
+    def forward(self, patches: torch.Tensor, masks=None) -> torch.Tensor:
+        # patches: [B, L, PATCH_SIZE], values must be in [0, 127]
         patches = torch.nn.functional.one_hot(patches, num_classes=128).to(self.dtype)
         patches = patches.reshape(len(patches), -1, PATCH_SIZE * (128))
         patches = self.patch_embedding(patches.to(self.device))
 
-        if masks==None:
+        if masks is None:
             return self.base(inputs_embeds=patches)
         else:
-            return self.base(inputs_embeds=patches,
-                             attention_mask=masks)
+            return self.base(inputs_embeds=patches, attention_mask=masks)
 
 
 class CharLevelDecoder(PreTrainedModel):
@@ -259,77 +312,38 @@ class CharLevelDecoder(PreTrainedModel):
         super().__init__(config)
         self.special_token_id = 0
         self.bos_token_id = 1
-
         self.base = GPT2LMHeadModel(config)
 
-    def forward(self,
-                encoded_patches: torch.Tensor,
-                target_patches: torch.Tensor):
-        """
-        The forward pass of the char-level decoder model.
-        :param encoded_patches: the encoded patches
-        :param target_patches: the target patches
-        :return: the output of the model
-        """
-        # preparing the labels for model training
+    def forward(self, encoded_patches: torch.Tensor, target_patches: torch.Tensor):
         target_patches = torch.cat((torch.ones_like(target_patches[:,0:1])*self.bos_token_id, target_patches), dim=1)
-        # print('target_patches shape:', target_patches.shape)
-
         target_masks = target_patches == self.special_token_id
         labels = target_patches.clone().masked_fill_(target_masks, -100)
-
-        # masking the labels for model training
         target_masks = torch.ones_like(labels)
         target_masks = target_masks.masked_fill_(labels == -100, 0)
 
-        # select patches
-        if PATCH_SAMPLING_BATCH_SIZE!=0 and PATCH_SAMPLING_BATCH_SIZE<target_patches.shape[0]:
+        if PATCH_SAMPLING_BATCH_SIZE != 0 and PATCH_SAMPLING_BATCH_SIZE < target_patches.shape[0]:
             indices = list(range(len(target_patches)))
             random.shuffle(indices)
             selected_indices = sorted(indices[:PATCH_SAMPLING_BATCH_SIZE])
-
             target_patches = target_patches[selected_indices,:]
             target_masks = target_masks[selected_indices,:]
             encoded_patches = encoded_patches[selected_indices,:]
 
-        # get input embeddings
         inputs_embeds = torch.nn.functional.embedding(target_patches, self.base.transformer.wte.weight)
-
-        # concatenate the encoded patches with the input embeddings
         inputs_embeds = torch.cat((encoded_patches.unsqueeze(1), inputs_embeds[:,1:,:]), dim=1)
 
-        output = self.base(inputs_embeds=inputs_embeds, 
-                         attention_mask=target_masks,
-                         labels=labels)
-                         # output_hidden_states=True=True)
-
+        output = self.base(inputs_embeds=inputs_embeds, attention_mask=target_masks, labels=labels)
         return output
 
-    def generate(self,
-                 encoded_patch: torch.Tensor,   # [hidden_size]
-                 tokens: torch.Tensor): # [1]
-        """
-        The generate function for generating a patch based on the encoded patch and already generated tokens.
-        :param encoded_patch: the encoded patch
-        :param tokens: already generated tokens in the patch
-        :return: the probability distribution of next token
-        """
-        encoded_patch = encoded_patch.reshape(1, 1, -1) # [1, 1, hidden_size]
+    def generate(self, encoded_patch: torch.Tensor, tokens: torch.Tensor):
+        encoded_patch = encoded_patch.reshape(1, 1, -1)
         tokens = tokens.reshape(1, -1)
-
-        # Get input embeddings
         tokens = torch.nn.functional.embedding(tokens, self.base.transformer.wte.weight)
-
-        # Concatenate the encoded patch with the input embeddings
         tokens = torch.cat((encoded_patch, tokens[:,1:,:]), dim=1)
-        
-        # Get output from model
         outputs = self.base(inputs_embeds=tokens)
-        
-        # Get probabilities of next token
         probs = torch.nn.functional.softmax(outputs.logits.squeeze(0)[-1], dim=-1)
-
         return probs
+
 
 def safe_normalize_probs(probs):
     epsilon = 1e-12
@@ -343,6 +357,12 @@ def safe_normalize_probs(probs):
         probs = np.zeros_like(probs)
         probs[0] = 1.0
     return probs
+
+
+# === 构建标签词汇表（与 _VALID_TAGS 一致）===
+def _build_tag_vocab():
+    return {tag: idx for idx, tag in enumerate(sorted(_VALID_TAGS))}
+
 
 class NotaGenLMHeadModel(PreTrainedModel):
     """
@@ -359,18 +379,39 @@ class NotaGenLMHeadModel(PreTrainedModel):
         self.eos_token_id = 2
         self.patch_level_decoder = PatchLevelDecoder(encoder_config)
         self.char_level_decoder = CharLevelDecoder(decoder_config)
+        
+        # 标签嵌入层
+        self.tag_to_id = _build_tag_vocab()
+        self.tag_embedding = torch.nn.Embedding(len(self.tag_to_id), HIDDEN_SIZE)
+        torch.nn.init.normal_(self.tag_embedding.weight, std=0.02)
 
-    def forward(self,
-                patches: torch.Tensor,
-                masks: torch.Tensor):
-        """
-        The forward pass of the bGPT model.
-        :param patches: the patches to be encoded
-        :param masks: the masks for the patches
-        :return: the decoded patches
-        """
+    def embed_tags(self, tags_list):
+        """将标签列表转换为嵌入向量"""
+        device = next(self.parameters()).device
+        batch_embeds = []
+        for tags in tags_list:
+            valid_tag_ids = []
+            for tag in tags:
+                if tag in self.tag_to_id:
+                    valid_tag_ids.append(self.tag_to_id[tag])
+                # 忽略未知标签（不应发生，因 encode_train 已过滤）
+            
+            if valid_tag_ids:
+                tag_tensor = torch.tensor(valid_tag_ids, device=device)
+                embed = self.tag_embedding(tag_tensor).mean(dim=0)
+            else:
+                embed = torch.zeros(HIDDEN_SIZE, device=device)
+            batch_embeds.append(embed)
+        return torch.stack(batch_embeds)
+
+    def forward(self, patches: torch.Tensor, masks: torch.Tensor, tags=None):
         patches = patches.reshape(len(patches), -1, PATCH_SIZE)
         encoded_patches = self.patch_level_decoder(patches, masks)["last_hidden_state"]
+        
+        # 注入标签嵌入
+        if tags is not None:
+            tag_embeds = self.embed_tags(tags)
+            encoded_patches[:, 0] = encoded_patches[:, 0] + tag_embeds
         
         left_shift_masks = masks * (masks.flip(1).cumsum(1).flip(1) > 1)
         masks[:, 0] = 0
@@ -380,42 +421,34 @@ class NotaGenLMHeadModel(PreTrainedModel):
 
         return self.char_level_decoder(encoded_patches, patches)
         
-    def generate(self,
-                 patches: torch.Tensor,
-                 top_k=0,
-                 top_p=1,
-                 temperature=1.0):
-        """
-        The generate function for generating patches based on patches.
-        :param patches: the patches to be encoded
-        :param top_k: the top k for sampling
-        :param top_p: the top p for sampling
-        :param temperature: the temperature for sampling
-        :return: the generated patches
-        """
+    def generate(self, patches: torch.Tensor, tags=None, top_k=0, top_p=1, temperature=1.0):
         if patches.shape[-1] % PATCH_SIZE != 0:
             tokens = patches[:,:,-(patches.shape[-1]%PATCH_SIZE):].squeeze(0, 1)
             tokens = torch.cat((torch.tensor([self.bos_token_id], device=self.device), tokens), dim=-1)
             patches = patches[:,:,:-(patches.shape[-1]%PATCH_SIZE)]
         else:
-            tokens =  torch.tensor([self.bos_token_id], device=self.device)
+            tokens = torch.tensor([self.bos_token_id], device=self.device)
 
-        patches = patches.reshape(len(patches), -1, PATCH_SIZE) # [bs, seq, patch_size]
-        encoded_patches = self.patch_level_decoder(patches)["last_hidden_state"]    # [bs, seq, hidden_size]
+        patches = patches.reshape(len(patches), -1, PATCH_SIZE)
+        encoded_patches = self.patch_level_decoder(patches)["last_hidden_state"]
+        
+        # 注入标签（生成时）
+        if tags is not None:
+            tag_embed = self.embed_tags([tags])
+            encoded_patches[:, 0] = encoded_patches[:, 0] + tag_embed.squeeze(0)
+
         generated_patch = []            
-
         while True:
-            prob = self.char_level_decoder.generate(encoded_patches[0][-1], tokens).cpu().detach().numpy()  # [128]
+            prob = self.char_level_decoder.generate(encoded_patches[0][-1], tokens).cpu().detach().numpy()
             prob = safe_normalize_probs(prob)
-            prob = top_k_sampling(prob, top_k=top_k, return_probs=True) # [128]
+            prob = top_k_sampling(prob, top_k=top_k, return_probs=True)
             prob = safe_normalize_probs(prob)
-            prob = top_p_sampling(prob, top_p=top_p, return_probs=True) # [128]
+            prob = top_p_sampling(prob, top_p=top_p, return_probs=True)
             prob = safe_normalize_probs(prob)
-            token = temperature_sampling(prob, temperature=temperature) # int
-            char = chr(token)
+            token = temperature_sampling(prob, temperature=temperature)
             generated_patch.append(token)
 
-            if len(tokens) >= PATCH_SIZE:# or token == self.eos_token_id:
+            if len(tokens) >= PATCH_SIZE:
                 break
             else:
                 tokens = torch.cat((tokens, torch.tensor([token], device=self.device)), dim=0)
