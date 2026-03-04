@@ -1,169 +1,171 @@
+# inference.py
 import os
 import time
 import torch
 import re
 import difflib
+import json
 from utils import *
 from config import *
 from transformers import GPT2Config
 from abctoolkit.utils import Exclaim_re, Quote_re, SquareBracket_re, Barline_regexPattern
 from abctoolkit.transpose import Note_list, Pitch_sign_list
 from abctoolkit.duration import calculate_bartext_duration
-import requests
-import torch
-from huggingface_hub import hf_hub_download
 import logging
+
+
+# === 在 inference_from_tags() 函数开头添加 ===
+def inference_from_tags(tags: list):
+    """从标签列表生成 ABC 音乐（4 标签库版本）"""
+    # 标签验证
+    VALID_TAGS_4CATEGORIES = {
+        'classical', 'jazz', 'pop', 'folk', 'electronic',
+        'blues', 'rock', 'hiphop', 'latin', 'christian',
+        'children', 'epic', 'other',
+        'piano', 'guitar', 'voice', 'strings', 'woodwinds',
+        'brass', 'percussion', 'synth', 'ensemble',
+        'happy', 'sad', 'calm', 'energetic', 'dramatic',
+        'mysterious', 'romantic', 'heroic', 'neutral',
+        'very_slow', 'slow', 'medium', 'fast', 'very_fast'
+    }
+    
+    valid_tags = []
+    for tag in tags:
+        normalized = normalize_tag(tag)
+        if normalized in VALID_TAGS_4CATEGORIES:
+            valid_tags.append(normalized)
+        else:
+            logger.warning(f"Invalid tag ignored: {tag}")
+    
+    if not valid_tags:
+        logger.warning("No valid tags provided. Using default 'classical'.")
+        valid_tags = ['classical']
+    
+    # ... 其余代码保持不变
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Extend note list if needed
 Note_list = Note_list + ['z', 'x']
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Initialize patchilizer and model
 patchilizer = Patchilizer()
 
-patch_config = GPT2Config(num_hidden_layers=PATCH_NUM_LAYERS,
-                          max_length=PATCH_LENGTH,
-                          max_position_embeddings=PATCH_LENGTH,
-                          n_embd=HIDDEN_SIZE,
-                          num_attention_heads=HIDDEN_SIZE // 64,
-                          vocab_size=1)
-byte_config = GPT2Config(num_hidden_layers=CHAR_NUM_LAYERS,
-                         max_length=PATCH_SIZE + 1,
-                         max_position_embeddings=PATCH_SIZE + 1,
-                         hidden_size=HIDDEN_SIZE,
-                         num_attention_heads=HIDDEN_SIZE // 64,
-                         vocab_size=128)
+patch_config = GPT2Config(
+    num_hidden_layers=PATCH_NUM_LAYERS,
+    max_length=PATCH_LENGTH,
+    max_position_embeddings=PATCH_LENGTH,
+    n_embd=HIDDEN_SIZE,
+    num_attention_heads=HIDDEN_SIZE // 64,
+    vocab_size=1
+)
+byte_config = GPT2Config(
+    num_hidden_layers=CHAR_NUM_LAYERS,
+    max_length=PATCH_SIZE + 1,
+    max_position_embeddings=PATCH_SIZE + 1,
+    hidden_size=HIDDEN_SIZE,
+    num_attention_heads=HIDDEN_SIZE // 64,
+    vocab_size=128
+)
 
 model = NotaGenLMHeadModel(encoder_config=patch_config, decoder_config=byte_config).to(device)
 
 
-def download_model_weights():
-    weights_path = "weights_notagenx_p_size_16_p_length_1024_p_layers_20_h_size_1280.pth"
-    local_weights_path = os.path.join(os.getcwd(), weights_path)
-
-    # Check if weights already exist locally
-    if os.path.exists(local_weights_path):
-        logger.info(f"Model weights already exist at {local_weights_path}")
-        return local_weights_path
-
-    logger.info("Downloading model weights from HuggingFace Hub...")
-    try:
-        # Download from HuggingFace
-        downloaded_path = hf_hub_download(
-            repo_id="ElectricAlexis/NotaGen",
-            filename=weights_path,
-            local_dir=os.getcwd(),
-            local_dir_use_symlinks=False
-        )
-        logger.info(f"Model weights downloaded successfully to {downloaded_path}")
-        return downloaded_path
-    except Exception as e:
-        logger.error(f"Error downloading model weights: {str(e)}")
-        raise RuntimeError(f"Failed to download model weights: {str(e)}")
-
-
 def prepare_model_for_kbit_training(model, use_gradient_checkpointing=True):
-    """
-    Prepare model for k-bit training.
-    Features include:
-    1. Convert model to mixed precision (FP16).
-    2. Disable unnecessary gradient computations.
-    3. Enable gradient checkpointing (optional).
-    """
-    # Convert model to mixed precision
+    """模型量化准备（保持原逻辑）"""
     model = model.to(dtype=torch.float16)
-
-    # Disable gradients for embedding layers
     for param in model.parameters():
         if param.dtype == torch.float32:
             param.requires_grad = False
-
-    # Enable gradient checkpointing
     if use_gradient_checkpointing:
         model.gradient_checkpointing_enable()
-
     return model
 
 
-model = prepare_model_for_kbit_training(
-    model,
-    use_gradient_checkpointing=False
-)
+# Load model
+model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
+logger.info(f"Parameter Number: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
-print("Parameter Number: " + str(sum(p.numel() for p in model.parameters() if p.requires_grad)))
+# === 修改核心：直接加载本地模型权重 ===
+model_weights_path = INFERENCE_WEIGHTS_PATH
 
-# Download weights at startup
-model_weights_path = download_model_weights()
-checkpoint = torch.load(model_weights_path, weights_only=True, map_location=torch.device(device))
+# 支持相对路径和绝对路径
+if not os.path.isabs(model_weights_path):
+    model_weights_path = os.path.join(os.getcwd(), model_weights_path)
+
+if not os.path.exists(model_weights_path):
+    raise FileNotFoundError(
+        f"❌ Model weights not found at: '{model_weights_path}'\n"
+        f"Please ensure:\n"
+        f"  1. INFERENCE_WEIGHTS_PATH in config.py is correctly set\n"
+        f"  2. The file exists at the specified local path\n"
+        f"  3. Path uses forward slashes (/) or escaped backslashes (\\\\) on Windows"
+    )
+
+logger.info(f"✅ Loading model weights from: {model_weights_path}")
+checkpoint = torch.load(model_weights_path, weights_only=True, map_location=device)
 model.load_state_dict(checkpoint['model'], strict=False)
-
-model = model.to(device)
 model.eval()
+# === 修改结束 ===
 
 
 def postprocess_inst_names(abc_text):
-    with open('standard_inst_names.txt', 'r', encoding='utf-8') as f:
-        standard_instruments_list = [line.strip() for line in f if line.strip()]
+    """标准化乐器名称"""
+    try:
+        with open('standard_inst_names.txt', 'r', encoding='utf-8') as f:
+            standard_instruments_list = [line.strip() for line in f if line.strip()]
+    except FileNotFoundError:
+        logger.warning("standard_inst_names.txt not found. Skipping instrument name postprocessing.")
+        return abc_text
 
-    with open('instrument_mapping.json', 'r', encoding='utf-8') as f:
-        instrument_mapping = json.load(f)
+    try:
+        with open('instrument_mapping.json', 'r', encoding='utf-8') as f:
+            instrument_mapping = json.load(f)
+    except FileNotFoundError:
+        logger.warning("instrument_mapping.json not found. Skipping instrument name mapping.")
+        return abc_text
 
     abc_lines = abc_text.split('\n')
-    abc_lines = list(filter(None, abc_lines))
-    abc_lines = [line + '\n' for line in abc_lines]
+    abc_lines = [line + '\n' for line in abc_lines if line.strip()]
 
     for i, line in enumerate(abc_lines):
         if line.startswith('V:') and 'nm=' in line:
             match = re.search(r'nm="([^"]*)"', line)
             if match:
                 inst_name = match.group(1)
-
-                # Check if the instrument name is already standard
                 if inst_name in standard_instruments_list:
                     continue
-
-                # Find the most similar key in instrument_mapping
                 matching_key = difflib.get_close_matches(inst_name, list(instrument_mapping.keys()), n=1, cutoff=0.6)
-
                 if matching_key:
-                    # Replace the instrument name with the standardized version
                     replacement = instrument_mapping[matching_key[0]]
-                    new_line = line.replace(f'nm="{inst_name}"', f'nm="{replacement}"')
-                    abc_lines[i] = new_line
+                    abc_lines[i] = line.replace(f'nm="{inst_name}"', f'nm="{replacement}"')
 
-    # Combine the lines back into a single string
-    processed_abc_text = ''.join(abc_lines)
-    return processed_abc_text
+    return ''.join(abc_lines)
 
 
 def complete_brackets(s):
+    """补全未闭合的括号"""
     stack = []
     bracket_map = {'{': '}', '[': ']', '(': ')'}
-
-    # Iterate through each character, handle bracket matching
     for char in s:
         if char in bracket_map:
             stack.append(char)
         elif char in bracket_map.values():
-            # Find the corresponding left bracket
             for key, value in bracket_map.items():
                 if value == char:
                     if stack and stack[-1] == key:
                         stack.pop()
-                    break  # Found matching right bracket, process next character
-
-    # Complete missing right brackets (in reverse order of remaining left brackets in stack)
+                    break
     completion = ''.join(bracket_map[c] for c in reversed(stack))
     return s + completion
 
 
 def rest_unreduce(abc_lines):
+    """恢复被压缩的休止符"""
     tunebody_index = None
     for i in range(len(abc_lines)):
         if abc_lines[i].startswith('%%score'):
@@ -172,7 +174,10 @@ def rest_unreduce(abc_lines):
             tunebody_index = i
             break
 
-    metadata_lines = abc_lines[: tunebody_index]
+    if tunebody_index is None:
+        return abc_lines
+
+    metadata_lines = abc_lines[:tunebody_index]
     tunebody_lines = abc_lines[tunebody_index:]
 
     part_symbol_list = []
@@ -187,218 +192,69 @@ def rest_unreduce(abc_lines):
             part_symbol_list.append(symbol)
             if symbol[2:] not in existed_voices:
                 voice_group_list.append([symbol[2:]])
-    z_symbol_list = []  # voices that use z as rest
-    x_symbol_list = []  # voices that use x as rest
-    for voice_group in voice_group_list:
-        z_symbol_list.append('V:' + voice_group[0])
-        for j in range(1, len(voice_group)):
-            x_symbol_list.append('V:' + voice_group[j])
 
-    part_symbol_list.sort(key=lambda x: int(x[2:]))
+    z_symbol_list = ['V:' + group[0] for group in voice_group_list]
+    x_symbol_list = ['V:' + voice for group in voice_group_list for voice in group[1:]]
+
+    part_symbol_list.sort(key=lambda x: int(x[2:]) if x[2:].isdigit() else 0)
 
     unreduced_tunebody_lines = []
+    ref_dur = 1  # default fallback
 
     for i, line in enumerate(tunebody_lines):
         unreduced_line = ''
-
         line = re.sub(r'^\[r:[^\]]*\]', '', line)
-
         pattern = r'\[V:(\d+)\](.*?)(?=\[V:|$)'
         matches = re.findall(pattern, line)
+        line_bar_dict = {f'V:{match[0]}': match[1] for match in matches}
 
-        line_bar_dict = {}
-        for match in matches:
-            key = f'V:{match[0]}'
-            value = match[1]
-            line_bar_dict[key] = value
-
-        # calculate duration and collect barline
+        # Calculate reference duration
         dur_dict = {}
         for symbol, bartext in line_bar_dict.items():
             right_barline = ''.join(re.split(Barline_regexPattern, bartext)[-2:])
-            bartext = bartext[:-len(right_barline)]
+            bartext_clean = bartext[:-len(right_barline)] if right_barline else bartext
             try:
-                bar_dur = calculate_bartext_duration(bartext)
+                bar_dur = calculate_bartext_duration(bartext_clean)
+                if bar_dur is not None:
+                    dur_dict[bar_dur] = dur_dict.get(bar_dur, 0) + 1
             except:
-                bar_dur = None
-            if bar_dur is not None:
-                if bar_dur not in dur_dict.keys():
-                    dur_dict[bar_dur] = 1
-                else:
-                    dur_dict[bar_dur] += 1
+                pass
 
-        try:
+        if dur_dict:
             ref_dur = max(dur_dict, key=dur_dict.get)
-        except:
-            pass  # use last ref_dur
 
-        if i == 0:
-            prefix_left_barline = line.split('[V:')[0]
-        else:
-            prefix_left_barline = ''
+        prefix_left_barline = line.split('[V:')[0] if i == 0 else ''
 
         for symbol in part_symbol_list:
-            if symbol in line_bar_dict.keys():
+            if symbol in line_bar_dict:
                 symbol_bartext = line_bar_dict[symbol]
             else:
-                if symbol in z_symbol_list:
-                    symbol_bartext = prefix_left_barline + 'z' + str(ref_dur) + right_barline
-                elif symbol in x_symbol_list:
-                    symbol_bartext = prefix_left_barline + 'x' + str(ref_dur) + right_barline
+                rest_char = 'z' if symbol in z_symbol_list else 'x'
+                symbol_bartext = prefix_left_barline + rest_char + str(ref_dur) + right_barline
             unreduced_line += '[' + symbol + ']' + symbol_bartext
 
         unreduced_tunebody_lines.append(unreduced_line + '\n')
 
-    unreduced_lines = metadata_lines + unreduced_tunebody_lines
+    return metadata_lines + unreduced_tunebody_lines
 
-    return unreduced_lines
-
-
-def inference_patch(period, composer, instrumentation):
-    prompt_lines = [
-        '%' + period + '\n',
-        '%' + composer + '\n',
-        '%' + instrumentation + '\n']
-
-    while True:
-
-        failure_flag = False
-
-        bos_patch = [patchilizer.bos_token_id] * (PATCH_SIZE - 1) + [patchilizer.eos_token_id]
-
-        start_time = time.time()
-
-        prompt_patches = patchilizer.patchilize_metadata(prompt_lines)
-        byte_list = list(''.join(prompt_lines))
-        context_tunebody_byte_list = []
-        metadata_byte_list = []
-
-        print(''.join(byte_list), end='')
-
-        prompt_patches = [[ord(c) for c in patch] + [patchilizer.special_token_id] * (PATCH_SIZE - len(patch)) for patch
-                          in prompt_patches]
-        prompt_patches.insert(0, bos_patch)
-
-        input_patches = torch.tensor(prompt_patches, device=device).reshape(1, -1)
-
-        end_flag = False
-        cut_index = None
-
-        tunebody_flag = False
-
-        with torch.inference_mode():
-
-            while True:
-                with torch.autocast(device_type='cuda', dtype=torch.float16):
-                    predicted_patch = model.generate(input_patches.unsqueeze(0),
-                                                     top_k=TOP_K,
-                                                     top_p=TOP_P,
-                                                     temperature=TEMPERATURE)
-                if not tunebody_flag and patchilizer.decode([predicted_patch]).startswith(
-                        '[r:'):  # 初次进入tunebody，必须以[r:0/开头
-                    tunebody_flag = True
-                    r0_patch = torch.tensor([ord(c) for c in '[r:0/']).unsqueeze(0).to(device)
-                    temp_input_patches = torch.concat([input_patches, r0_patch], axis=-1)
-                    predicted_patch = model.generate(temp_input_patches.unsqueeze(0),
-                                                     top_k=TOP_K,
-                                                     top_p=TOP_P,
-                                                     temperature=TEMPERATURE)
-                    predicted_patch = [ord(c) for c in '[r:0/'] + predicted_patch
-                if predicted_patch[0] == patchilizer.bos_token_id and predicted_patch[1] == patchilizer.eos_token_id:
-                    end_flag = True
-                    break
-                next_patch = patchilizer.decode([predicted_patch])
-
-                for char in next_patch:
-                    byte_list.append(char)
-                    if tunebody_flag:
-                        context_tunebody_byte_list.append(char)
-                    else:
-                        metadata_byte_list.append(char)
-                    print(char, end='')
-
-                patch_end_flag = False
-                for j in range(len(predicted_patch)):
-                    if patch_end_flag:
-                        predicted_patch[j] = patchilizer.special_token_id
-                    if predicted_patch[j] == patchilizer.eos_token_id:
-                        patch_end_flag = True
-
-                predicted_patch = torch.tensor([predicted_patch], device=device)  # (1, 16)
-                input_patches = torch.cat([input_patches, predicted_patch], dim=1)  # (1, 16 * patch_len)
-
-                if len(byte_list) > 102400:
-                    failure_flag = True
-                    break
-                if time.time() - start_time > 10 * 60:
-                    failure_flag = True
-                    break
-
-                if input_patches.shape[1] >= PATCH_LENGTH * PATCH_SIZE and not end_flag:
-                    print('Stream generating...')
-
-                    metadata = ''.join(metadata_byte_list)
-                    context_tunebody = ''.join(context_tunebody_byte_list)
-
-                    if '\n' not in context_tunebody:
-                        break  # Generated content is all metadata, abandon
-
-                    context_tunebody_lines = context_tunebody.strip().split('\n')
-
-                    if not context_tunebody.endswith('\n'):
-                        context_tunebody_lines = [context_tunebody_lines[i] + '\n' for i in
-                                                  range(len(context_tunebody_lines) - 1)] + [context_tunebody_lines[-1]]
-                    else:
-                        context_tunebody_lines = [context_tunebody_lines[i] + '\n' for i in
-                                                  range(len(context_tunebody_lines))]
-
-                    cut_index = len(context_tunebody_lines) // 2
-                    abc_code_slice = metadata + ''.join(context_tunebody_lines[-cut_index:])
-
-                    input_patches = patchilizer.encode_generate(abc_code_slice)
-
-                    input_patches = [item for sublist in input_patches for item in sublist]
-                    input_patches = torch.tensor([input_patches], device=device)
-                    input_patches = input_patches.reshape(1, -1)
-
-                    context_tunebody_byte_list = list(''.join(context_tunebody_lines[-cut_index:]))
-
-            if not failure_flag:
-                abc_text = ''.join(byte_list)
-
-                # unreduce
-                abc_lines = abc_text.split('\n')
-                abc_lines = list(filter(None, abc_lines))
-                abc_lines = [line + '\n' for line in abc_lines]
-                try:
-                    unreduced_abc_lines = rest_unreduce(abc_lines)
-                except:
-                    failure_flag = True
-                    pass
-                else:
-                    unreduced_abc_lines = [line for line in unreduced_abc_lines if
-                                           not (line.startswith('%') and not line.startswith('%%'))]
-                    unreduced_abc_lines = ['X:1\n'] + unreduced_abc_lines
-                    unreduced_abc_text = ''.join(unreduced_abc_lines)
-                    return unreduced_abc_text
-
-
-if __name__ == '__main__':
-    inference_patch('Classical', 'Beethoven, Ludwig van', 'Orchestral')
 
 def inference_from_tags(tags: list):
     """
-    从标签列表生成 ABC 音乐
-    创建提示行（标签格式）
-    确保所有标签都在模型词汇表中
+    从标签列表生成 ABC 音乐（支持新扩容的乐器标签）
     """
-    valid_tags = [tag for tag in tags if tag in model.tag_to_id]
-    if not valid_tags:        
-        valid_tags = ['classical']  # 如果没有有效标签，使用默认标签（如 ['classical']）
-    # 使用 valid_tags 创建提示行（关键修复！）
-    prompt_lines = [f'%{tag}\n' for tag in valid_tags]
-    prompt_lines.append('%end\n')
+    # === 关键：标准化并验证标签 ===
+    valid_tags = []
+    for tag in tags:
+        normalized = normalize_tag(tag)
+        if normalized in model.tag_to_id:
+            valid_tags.append(normalized)
     
+    if not valid_tags:
+        logger.warning("No valid tags provided. Using default 'classical'.")
+        valid_tags = ['classical']
+    
+    prompt_lines = [f'%{tag}\n' for tag in valid_tags]
+
     while True:
         failure_flag = False
         bos_patch = [patchilizer.bos_token_id] * (PATCH_SIZE - 1) + [patchilizer.eos_token_id]
@@ -409,14 +265,15 @@ def inference_from_tags(tags: list):
         context_tunebody_byte_list = []
         metadata_byte_list = []
 
-        print(''.join(byte_list), end='')
+        print(''.join(byte_list), end='', flush=True)
 
-        prompt_patches = [[ord(c) for c in patch] + [patchilizer.special_token_id] * (PATCH_SIZE - len(patch)) for patch in prompt_patches]
+        prompt_patches = [
+            [ord(c) for c in patch] + [patchilizer.special_token_id] * (PATCH_SIZE - len(patch))
+            for patch in prompt_patches
+        ]
         prompt_patches.insert(0, bos_patch)
-
         input_patches = torch.tensor(prompt_patches, device=device).reshape(1, -1)
 
-        end_flag = False
         tunebody_flag = False
 
         with torch.inference_mode():
@@ -424,29 +281,28 @@ def inference_from_tags(tags: list):
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
                     predicted_patch = model.generate(
                         input_patches.unsqueeze(0),
-                        tags=valid_tags,  # ← 关键：传入标签
-                        top_k=TOP_K,
-                        top_p=TOP_P,
-                        temperature=TEMPERATURE
-                    )
-                
-                if not tunebody_flag and patchilizer.decode([predicted_patch]).startswith('[r:'):
-                    tunebody_flag = True
-                    r0_patch = torch.tensor([ord(c) for c in '[r:0/']).unsqueeze(0).to(device)
-                    temp_input_patches = torch.concat([input_patches, r0_patch], axis=-1)
-                    predicted_patch = model.generate(
-                        temp_input_patches.unsqueeze(0),
                         tags=valid_tags,
                         top_k=TOP_K,
                         top_p=TOP_P,
                         temperature=TEMPERATURE
                     )
-                    predicted_patch = [ord(c) for c in '[r:0/'] + predicted_patch
-                
-                if predicted_patch[0] == patchilizer.bos_token_id and predicted_patch[1] == patchilizer.eos_token_id:
-                    end_flag = True
+
+                # Handle first tunebody token
+                if not tunebody_flag:
+                    decoded = patchilizer.decode([predicted_patch])
+                    # 检测乐谱区开始：声部标记或 ABC 头
+                    if any(m in decoded for m in ['[V:', '[r:', 'M:', 'L:', 'K:']):
+                        tunebody_flag = True
+                        logger.info(f"[TUNEBODY] Detected: {decoded[:50]}")
+                        # 不再强制注入 [r:0/，让模型自然生成
+
+                # Check for end token
+                if (len(predicted_patch) >= 2 and 
+                    predicted_patch[0] == patchilizer.bos_token_id and 
+                    predicted_patch[1] == patchilizer.eos_token_id):
                     break
-                
+
+                # Append generated characters
                 next_patch = patchilizer.decode([predicted_patch])
                 for char in next_patch:
                     byte_list.append(char)
@@ -454,57 +310,73 @@ def inference_from_tags(tags: list):
                         context_tunebody_byte_list.append(char)
                     else:
                         metadata_byte_list.append(char)
-                    print(char, end='')
+                    print(char, end='', flush=True)
 
-                patch_end_flag = False
-                for j in range(len(predicted_patch)):
-                    if patch_end_flag:
-                        predicted_patch[j] = patchilizer.special_token_id
-                    if predicted_patch[j] == patchilizer.eos_token_id:
-                        patch_end_flag = True
+                # Pad patch to fixed length
+                padded_patch = []
+                eos_found = False
+                for j, token in enumerate(predicted_patch):
+                    if eos_found:
+                        padded_patch.append(patchilizer.special_token_id)
+                    else:
+                        padded_patch.append(token)
+                        if token == patchilizer.eos_token_id:
+                            eos_found = True
+                while len(padded_patch) < PATCH_SIZE:
+                    padded_patch.append(patchilizer.special_token_id)
 
-                predicted_patch = torch.tensor([predicted_patch], device=device)
-                input_patches = torch.cat([input_patches, predicted_patch], dim=1)
+                # Update input
+                predicted_tensor = torch.tensor([padded_patch], device=device)
+                input_patches = torch.cat([input_patches, predicted_tensor], dim=1)
 
-                if len(byte_list) > 102400:
+                # Safety checks
+                if len(byte_list) > 102400 or (time.time() - start_time) > 600:
                     failure_flag = True
                     break
-                if time.time() - start_time > 10 * 60:
-                    failure_flag = True
-                    break
 
-                if input_patches.shape[1] >= PATCH_LENGTH * PATCH_SIZE and not end_flag:
-                    print('Stream generating...')
+                # Streaming context window management
+                if input_patches.shape[1] >= PATCH_LENGTH * PATCH_SIZE:
+                    print('\nStream generating...', flush=True)
                     metadata = ''.join(metadata_byte_list)
                     context_tunebody = ''.join(context_tunebody_byte_list)
                     if '\n' not in context_tunebody:
                         break
 
-                    context_tunebody_lines = context_tunebody.strip().split('\n')
+                    lines = context_tunebody.strip().split('\n')
                     if not context_tunebody.endswith('\n'):
-                        context_tunebody_lines = [context_tunebody_lines[i] + '\n' for i in range(len(context_tunebody_lines) - 1)] + [context_tunebody_lines[-1]]
+                        lines = [l + '\n' for l in lines[:-1]] + [lines[-1]]
                     else:
-                        context_tunebody_lines = [context_tunebody_lines[i] + '\n' for i in range(len(context_tunebody_lines))]
+                        lines = [l + '\n' for l in lines]
 
-                    cut_index = len(context_tunebody_lines) // 2
-                    abc_code_slice = metadata + ''.join(context_tunebody_lines[-cut_index:])
+                    cut_index = len(lines) // 2
+                    abc_code_slice = metadata + ''.join(lines[-cut_index:])
                     input_patches = patchilizer.encode_generate(abc_code_slice)
-                    input_patches = [item for sublist in input_patches for item in sublist]
-                    input_patches = torch.tensor([input_patches], device=device).reshape(1, -1)
-                    context_tunebody_byte_list = list(''.join(context_tunebody_lines[-cut_index:]))
+                    input_patches = torch.tensor([item for sublist in input_patches for item in sublist], device=device).reshape(1, -1)
+                    context_tunebody_byte_list = list(''.join(lines[-cut_index:]))
 
             if not failure_flag:
                 abc_text = ''.join(byte_list)
-                abc_lines = abc_text.split('\n')
-                abc_lines = list(filter(None, abc_lines))
-                abc_lines = [line + '\n' for line in abc_lines]
+                abc_lines = [line + '\n' for line in abc_text.split('\n') if line.strip()]
                 try:
                     unreduced_abc_lines = rest_unreduce(abc_lines)
-                except:
+                except Exception as e:
+                    logger.error(f"Rest unreduce failed: {e}")
                     failure_flag = True
-                    pass
                 else:
-                    unreduced_abc_lines = [line for line in unreduced_abc_lines if not (line.startswith('%') and not line.startswith('%%'))]
-                    unreduced_abc_lines = ['X:1\n'] + unreduced_abc_lines
-                    unreduced_abc_text = ''.join(unreduced_abc_lines)
-                    return unreduced_abc_text
+                    # Remove non-%% metadata lines
+                    filtered_lines = [
+                        line for line in unreduced_abc_lines 
+                        if not (line.startswith('%') and not line.startswith('%%'))
+                    ]
+                    final_abc = 'X:1\n' + ''.join(filtered_lines)
+                    return final_abc
+
+        if failure_flag:
+            logger.warning("Generation failed. Retrying...")
+            time.sleep(1)
+
+
+if __name__ == '__main__':
+    # Example usage
+    result = inference_from_tags(['classical', 'solo', 'violin', 'romantic'])
+    print("\nGenerated ABC:\n", result)
