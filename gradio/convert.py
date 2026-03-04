@@ -1,3 +1,4 @@
+# convert.py
 import os
 # ========== 关键修复：在此处设置Qt插件路径 ==========
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = r"C:\Program Files\MuseScore 4\bin\platforms"
@@ -15,7 +16,7 @@ def abc2xml(filename_base):
     """将ABC记谱文件转换为MusicXML文件"""
     abc_filename = f"{filename_base}.abc"
     subprocess.run(
-        ["python", "abc2xml.py", '-o', '.', abc_filename, ],
+        ["uv", "run", "abc2xml.py", '-o', '.', abc_filename, ],# 适配uv环境
         check=True,
         capture_output=True,
         text=True
