@@ -11,202 +11,154 @@ from io import TextIOBase
 import datetime
 import subprocess
 
-from inference import inference_from_tags, postprocess_inst_names
-from convert import abc2xml, xml2, pdf2img
 
-# === 分类标签定义（中英文双语）===
+# === 明确导入所需函数，避免 * 导致命名冲突或循环 ===
+from utils import *
+from inference import *
+from convert import *
+
+# === 新版标签库定义 ===
+GENRE_LABELS = [
+    'classical',    # 古典（含巴洛克、文艺复兴、中世纪、浪漫主义）
+    'jazz',         # 爵士
+    'pop',          # 流行
+    'folk',         # 民谣（含乡村、蓝草、凯尔特）
+    'electronic',   # 电子（含 EDM、New Age、迪斯科）
+    'blues',        # 蓝调（含 Soul、R&B）
+    'rock',         # 摇滚（含金属）
+    'hiphop',       # 嘻哈（含说唱）
+    'latin',        # 拉丁（含探戈、桑巴、弗拉门戈、雷鬼）
+    'christian',    # 基督教音乐
+    'children',     # 儿童音乐
+    'epic',         # 史诗音乐
+    'other',        # 其他（无法归类的，含 20th_century、contemporary、worldmusic 等）
+]
+
+INSTRUMENT_LABELS = [
+    'piano',        # 钢琴（含键盘、大键琴）
+    'guitar',       # 吉他（含原声、电吉他）
+    'voice',        # 人声（含声乐、各声部）
+    'strings',      # 弦乐（含小提琴、中提琴、大提琴、低音提琴）
+    'woodwinds',    # 木管（含长笛、单簧管、双簧管、巴松管、萨克斯）
+    'brass',        # 铜管（含小号、圆号、长号、大号）
+    'percussion',   # 打击乐（含鼓）
+    'synth',        # 合成器
+    'ensemble',     # 合奏（含二重奏、三重奏、四重奏、管弦乐队、室内乐）
+]
+
+EMOTION_LABELS = [
+    'happy',        # 快乐（含嬉戏、欢乐）
+    'sad',          # 悲伤（含忧郁、怀旧、哀悼）
+    'calm',         # 平静（含宁静、温柔、优雅、安详）
+    'energetic',    # 充满活力（含激进、强烈、热情）
+    'dramatic',     # 戏剧性（含紧张、庄重、恐怖）
+    'mysterious',   # 神秘（含梦幻）
+    'romantic',     # 浪漫（含爱意）
+    'heroic',       # 英雄（含史诗、胜利）
+    'neutral',      # 中性（占位符，含适中）
+]
+
+TEMPO_LABELS = [
+    'very_slow',    # 极慢（Largo、Grave，BPM < 60）
+    'slow',         # 慢（Adagio、Andante，BPM 60-80）
+    'medium',       # 中速（Moderato，BPM 80-120）
+    'fast',         # 快（Allegro、Vivace，BPM 120-160）
+    'very_fast',    # 极快（Presto，BPM > 160）
+]
+
+# === 新版标签分类定义（带详细说明）===
 TAG_CATEGORIES = {
-    "🎼 主要流派": {
-        'classical': '古典',
+    "🎵 音乐流派 (Genre)": {
+        'classical': '古典 (含巴洛克、文艺复兴、中世纪、浪漫主义)',
         'jazz': '爵士',
-        'rock': '摇滚',
         'pop': '流行',
-        'folk': '民谣',
-        'reggae': '雷鬼',
-        'rap': '说唱',
-        'country': '乡村',
-        'blues': '蓝调',
-        'electronic': '电子',
-        'hiphop': '嘻哈',
-        'metal': '金属', 
-        'edm': '电子舞曲',
-        'r&b': '节奏布鲁斯',
-        'world': '世界音乐',
+        'folk': '民谣 (含乡村、蓝草、凯尔特)',
+        'electronic': '电子 (含 EDM、新世纪、迪斯科)',
+        'blues': '蓝调 (含灵魂乐、节奏布鲁斯)',
+        'rock': '摇滚 (含金属)',
+        'hiphop': '嘻哈 (含说唱)',
+        'latin': '拉丁 (含探戈、桑巴、弗拉门戈、雷鬼)',
         'christian': '基督教音乐',
         'children': '儿童音乐',
-        'disco': '迪斯科',
-        'soul': '灵魂',     
-        'experimental': '实验音乐',
-        'latin': '拉丁', 
-        'newage': '新世纪'
+        'epic': '史诗音乐',
+        'other': '其他 (20世纪、当代、世界音乐等)',
     },
     
-    "⚙️ 技术特征": {
-        'very_simple': '极简',
-        'simple': '简单',
-        'medium': '中等',
-        'complex': '复杂',
-        'very_complex': '极复杂',
-        'very_slow': '极慢',
-        'slow': '慢',
-        'fast': '快',
-        'very_fast': '极快',
-        'very_soft': '极弱',
-        'soft': '弱',
-        'loud': '强',
-        'very_loud': '极强',
-        'legato': '连奏',
-        'staccato': '断奏',
-        'mixed': '混合',
-        'syncopated': '切分',
-        'irregular': '不规则',
-        'diatonic': '自然音阶',
-        'chromatic': '半音阶',
-        'modal': '调式',
-        'atonal': '无调性',
-        'jazz_harmony': '爵士和声',
-        'monophonic': '单声部',
-        'homophonic': '主调',
-        'polyphonic': '复调',
-        'heterophonic': '异音同奏',
-        'binary': '二部',
-        'ternary': '三部',
-        'rondo': '回旋',
-        'theme_variations': '主题变奏',
-        'through_composed': '通谱'
+    "🎻 乐器编制 (Instrument)": {
+        'piano': '钢琴 (含键盘、大键琴)',
+        'guitar': '吉他 (含原声、电吉他)',
+        'voice': '人声 (含声乐、各声部)',
+        'strings': '弦乐 (含小提琴、中提琴、大提琴、低音提琴)',
+        'woodwinds': '木管 (含长笛、单簧管、双簧管、巴松管、萨克斯)',
+        'brass': '铜管 (含小号、圆号、长号、大号)',
+        'percussion': '打击乐 (含鼓)',
+        'synth': '合成器',
+        'ensemble': '合奏 (含二重奏、三重奏、四重奏、管弦乐队、室内乐)',
     },
-    
-    "🎹 乐器相关": {
-        'solo': '独奏',
-        'duet': '二重奏',
-        'trio': '三重奏',
-        'quartet': '四重奏',
-        'small_ensemble': '小编制',
-        'large_ensemble': '大编制',
-        'orchestra': '管弦乐队',
-        'strings': '弦乐',
-        'woodwinds': '木管',
-        'brass': '铜管',
-        'percussion': '打击乐',
-        'keyboard': '键盘',
-        'voice': '人声',
-        'piano': '钢琴',
-        'guitar': '吉他',
-        'ukulele': '尤克里里',
-        'violin': '小提琴',
-        'viola': '中提琴',
-        'cello': '大提琴',
-        'flute': '长笛',
-        'clarinet': '单簧管',      
-        'oboe': '双簧管',
-        'trumpet': '小号',
-        'saxophone': '萨克斯',
-        'drums': '鼓',
-        'bass': '贝斯',
-        'organ': '管风琴',
-        'harp': '竖琴',
-        'dizi': '笛子',
-        'accordion': '手风琴',
-        'mandolin': '曼陀林',
-        'banjo': '班卓琴',
-        'harmonica': '口琴'    
+
+    "😊 情绪情感 (Emotion)": {
+        'happy': '快乐 (含嬉戏、欢乐)',
+        'sad': '悲伤 (含忧郁、怀旧、哀悼)',
+        'calm': '平静 (含宁静、温柔、优雅、安详)',
+        'energetic': '充满活力 (含激进、强烈、热情)',
+        'dramatic': '戏剧性 (含紧张、庄重、恐怖)',
+        'mysterious': '神秘 (含梦幻)',
+        'romantic': '浪漫 (含爱意)',
+        'heroic': '英雄 (含史诗、胜利)',
+        'neutral': '中性 (含适中)',
     },
-    
-    "😊 情绪情感": {
-        'happy': '快乐',
-        'sad': '悲伤',
-        'angry': '愤怒',
-        'peaceful': '宁静',
-        'energetic': '充满活力',
-        'melancholic': '忧郁',
-        'romantic': '浪漫',
-        'dramatic': '戏剧性',
-        'gentle': '绅士',
-        'calm': '平静',
-        'moderate': '适中',
-        'intense': '强烈',
-        'passionate': '热情',
-        'tense': '紧张',
-        'playful': '嬉戏',
-        'solemn': '庄重',
-        'mysterious': '神秘',
-        'heroic': '英雄',
-        'nostalgic': '怀旧',
-        'dreamy': '梦幻',
-        'aggressive': '激进',
-        'graceful': '优雅',
-        'horrifying': '震惊'
+
+    "⏱️ 速度标记 (Tempo)": {
+        'very_slow': '极慢 (Largo/Grave, BPM < 60)',
+        'slow': '慢 (Adagio/Andante, BPM 60-80)',
+        'medium': '中速 (Moderato, BPM 80-120)',
+        'fast': '快 (Allegro/Vivace, BPM 120-160)',
+        'very_fast': '极快 (Presto, BPM > 160)',
     },
-    
-    "🌍 文化地域": {
-        'europe': '欧洲',
-        'north_america': '北美',
-        'south_america': '南美',
-        'asia': '亚洲',
-        'africa': '非洲',
-        'middle_east': '中东',
-        'oceania': '大洋洲',
-        'medieval': '中世纪',
-        'renaissance': '文艺复兴',
-        'baroque': '巴洛克',
-        'classical': '古典',
-        'romantic': '浪漫',
-        '20th_century': '20世纪',
-        'contemporary': '当代',
-        'celtic': '凯尔特',
-        'flamenco': '弗拉门戈',
-        'tango': '探戈',
-        'samba': '桑巴',        
-        'bluegrass': '蓝草',
-        'klezmer': '克莱兹默',
-        'gamelan': '甘美兰'
-    },
-    
-    "🎯 功能用途": {
-        'etude': '练习曲',
-        'scale_exercise': '音阶练习',
-        'recital': '独奏会',
-        'competition': '比赛',
-        'audition': '试音',
-        'worship': '崇拜',
-        'ceremonial': '典礼',
-        'dance_accompaniment': '舞蹈伴奏',
-        'background': '背景音乐',
-        'focus': '专注',
-        'relaxation': '放松',
-        'meditation': '冥想',
-        'workout': '健身',
-        'party': '派对'
-    }
 }
 
-# 从分类字典构建平铺的翻译字典（用于验证）
+# 构建平铺翻译字典（用于显示）
 TAG_TRANSLATIONS = {}
 for category, tags in TAG_CATEGORIES.items():
-    TAG_TRANSLATIONS.update(tags)
+    for tag_en, tag_cn in tags.items():
+        TAG_TRANSLATIONS[tag_en] = tag_cn
 
-# 构建所有标签的列表
-ALL_TAGS = list(TAG_TRANSLATIONS.keys())
+# 所有标签列表 —— 严格按照 UI 显示顺序构建
+ALL_TAGS = []
+for category, tags in TAG_CATEGORIES.items():
+    for tag in tags.keys():
+        ALL_TAGS.append(tag)
+
+# 验证无重复
+from collections import Counter
+counts = Counter(ALL_TAGS)
+duplicates = [tag for tag, cnt in counts.items() if cnt > 1]
+if duplicates:
+    raise ValueError(f"Duplicate tag keys found: {duplicates}")
+
+# 有效标签集合（用于验证）
+VALID_TAGS = set(ALL_TAGS)
 
 title_html = """
 <div class="title-container">
-    <h1 class="title-text">NotaGen - 标签条件生成</h1> &nbsp;
+    <h1 class="title-text">NotaGen - 标签条件生成 (新版标签库)</h1> &nbsp;
         <!-- ArXiv -->
-        <a href="https://arxiv.org/abs/2502.18008   ">
-            <img src="https://img.shields.io/badge/NotaGen_Paper-ArXiv-%23B31B1B?logo=arxiv&logoColor=white   " alt="Paper">
+        <a href="https://arxiv.org/abs/2502.18008">
+            <img src="https://img.shields.io/badge/NotaGen_Paper-ArXiv-%23B31B1B?logo=arxiv&logoColor=white" alt="Paper">
         </a>
         &nbsp;
         <!-- GitHub -->
-        <a href="https://github.com/ElectricAlexis/NotaGen   ">
-            <img src="https://img.shields.io/badge/NotaGen_Code-GitHub-%23181717?logo=github&logoColor=white   " alt="GitHub">
+        <a href="https://github.com/ElectricAlexis/NotaGen">
+            <img src="https://img.shields.io/badge/NotaGen_Code-GitHub-%23181717?logo=github&logoColor=white" alt="GitHub">
         </a>
         &nbsp;
         <!-- HuggingFace -->
-        <a href="https://huggingface.co/ElectricAlexis/NotaGen   ">
-            <img src="https://img.shields.io/badge/NotaGen_Weights-HuggingFace-%23FFD21F?logo=huggingface&logoColor=white   " alt="Weights">
+        <a href="https://huggingface.co/ElectricAlexis/NotaGen">
+            <img src="https://img.shields.io/badge/NotaGen_Weights-HuggingFace-%23FFD21F?logo=huggingface&logoColor=white" alt="Weights">
         </a>
 </div>
-<p style="font-size: 1.2em;">选择最多 12 个音乐标签，模型将根据这些标签生成对应的乐谱！</p>
+<p style="font-size: 1.2em;">选择最多4个音乐标签，模型将根据这些标签生成对应的乐谱！</p>
+<p style="font-size: 1em; color: #666;">🎯 新版标签库：简化分类，更直观易用（共36个标签）</p>
 """
 
 class RealtimeStream(TextIOBase):
@@ -265,24 +217,20 @@ def convert_files_from_tags(abc_content, tags):
 
 def update_selected_tags(*selected_checkboxes):
     """更新选中的标签显示"""
-    # selected_checkboxes 是一个包含所有复选框状态的元组
-    
-    # 过滤出选中的复选框
     selected_tags = []
     for i, tag_en in enumerate(ALL_TAGS):
-        if i < len(selected_checkboxes) and selected_checkboxes[i]:  # 如果标签被选中
+        if i < len(selected_checkboxes) and selected_checkboxes[i]:
             selected_tags.append(tag_en)
     
-    # 限制最多12个标签
     if len(selected_tags) > 12:
         selected_tags = selected_tags[:12]
-        # 这里可以添加一个警告提示，但为了简单起见，我们只截取前12个
     
-    # 生成标签显示HTML
     html_parts = []
     for tag in selected_tags:
         cn_text = TAG_TRANSLATIONS.get(tag, tag)
-        html_parts.append(f'<span class="tag"><span class="tag-en">{tag}</span><span class="tag-cn">({cn_text})</span></span>')
+        # 只显示中文描述的主要部分（括号前的内容）
+        main_cn = cn_text.split(' (')[0] if ' (' in cn_text else cn_text
+        html_parts.append(f'<span class="tag"><span class="tag-en">{tag}</span><span class="tag-cn">({main_cn})</span></span>')
     
     display_html = f"""
     <div id='tag-display' style='min-height: 60px; padding: 10px; background: #f9f9f9; border-radius: 8px;'>
@@ -290,22 +238,23 @@ def update_selected_tags(*selected_checkboxes):
     </div>
     """
     
-    # 将选中的标签转换为空格分隔的字符串
     tag_string = " ".join(selected_tags)
-    
     return display_html, tag_string
 
 def update_tag_display(tag_text):
-    """兼容性函数：从文本框更新标签显示"""
+    """从文本框更新标签显示"""
     if not tag_text:
         return "<div id='tag-display' style='min-height: 60px; padding: 10px; background: #f9f9f9; border-radius: 8px;'></div>"
     
     tags = tag_text.strip().split()[:12]
     html_parts = []
     for tag in tags:
-        tag_lower = tag.lower()
-        cn_text = TAG_TRANSLATIONS.get(tag_lower, tag)
-        html_parts.append(f'<span class="tag"><span class="tag-en">{tag}</span><span class="tag-cn">({cn_text})</span></span>')
+        if tag in VALID_TAGS:
+            cn_text = TAG_TRANSLATIONS.get(tag, tag)
+            main_cn = cn_text.split(' (')[0] if ' (' in cn_text else cn_text
+            html_parts.append(f'<span class="tag"><span class="tag-en">{tag}</span><span class="tag-cn">({main_cn})</span></span>')
+        else:
+            html_parts.append(f'<span class="tag" style="background:#ffebee; color:#c62828;"><span class="tag-en">{tag}</span><span class="tag-cn">(无效标签)</span></span>')
     
     return f"""
     <div id='tag-display' style='min-height: 60px; padding: 10px; background: #f9f9f9; border-radius: 8px;'>
@@ -335,11 +284,16 @@ def generate_music_from_tags(tag_input_text):
     
     tags = tag_input_text.strip().split()[:12]
     valid_tags = []
+    invalid_tags = []
+    
     for tag in tags:
-        if tag.lower() in TAG_TRANSLATIONS:
-            valid_tags.append(tag.lower())
+        if tag in VALID_TAGS:
+            valid_tags.append(tag)
         else:
-            print(f"Warning: Unknown tag '{tag}'")
+            invalid_tags.append(tag)
+    
+    if invalid_tags:
+        raise gr.Error(f"Invalid tags found: {', '.join(invalid_tags)}. Please only use tags from the provided list.")
     
     if not valid_tags:
         raise gr.Error("No valid tags found! Please use tags from the provided list.")
@@ -441,75 +395,6 @@ css = """
     font-size: 13px;
 }
 
-/* 标签参考区域样式 */
-.tag-reference {
-    font-size: 11px;
-    line-height: 1.4;
-    max-height: 400px; /* 增加高度以容纳更多内容 */
-    overflow-y: auto;
-    padding: 10px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    background: #fafafa;
-    margin-bottom: 15px;
-}
-
-.tag-reference h3 {
-    margin-top: 15px;
-    margin-bottom: 8px;
-    color: #2c3e50;
-    font-size: 16px;
-    border-bottom: 1px solid #eee;
-    padding-bottom: 4px;
-}
-
-.tag-category {
-    margin-bottom: 15px;
-    display: flex;
-    flex-wrap: wrap;
-}
-
-.tag-checkbox-container {
-    display: flex;
-    align-items: center;
-    margin: 4px 8px 4px 0;
-    padding: 4px 8px;
-    background: white;
-    border: 1px solid #e0e0e0;
-    border-radius: 6px;
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.tag-checkbox-container:hover {
-    background: #f5f5f5;
-    border-color: #1976d2;
-}
-
-.tag-checkbox-container.selected {
-    background: #e3f2fd;
-    border-color: #1976d2;
-}
-
-.tag-checkbox {
-    margin-right: 6px !important;
-    cursor: pointer;
-}
-
-.tag-text {
-    font-family: monospace;
-    color: #d35400;
-    font-weight: bold;
-    margin-right: 4px;
-}
-
-.tag-translation {
-    color: #666;
-    font-size: 11px;
-}
-
-/* 选中的标签限制提示 */
 .tag-limit-hint {
     background: #fff3cd;
     border: 1px solid #ffecb5;
@@ -518,16 +403,6 @@ css = """
     border-radius: 6px;
     margin: 10px 0;
     font-size: 13px;
-}
-
-.tag-search-box {
-    margin-bottom: 15px;
-}
-
-button[size="sm"] {
-    padding: 4px 8px !important;
-    margin: 2px !important;
-    min-width: 60px;
 }
 
 #pdf-preview {
@@ -547,21 +422,6 @@ button[size="sm"] {
 
 .gr-row {
     gap: 10px !important;
-}
-
-.audio-panel {
-    margin-top: 15px !important;
-    max-width: 400px;
-}
-
-#audio-preview audio {
-    height: 200px !important;
-}
-
-.save-as-row {
-    margin-top: 15px;
-    padding: 10px;
-    border-top: 1px solid #eee;
 }
 
 .download-files {
@@ -587,62 +447,123 @@ button[size="sm"] {
     padding: 6px 12px !important;
     font-size: 13px !important;
 }
+
+.tag-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 10px;
+    margin: 10px 0;
+}
+
+.tag-item {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 8px 12px;
+    transition: all 0.2s;
+}
+
+.tag-item:hover {
+    border-color: #1976d2;
+    box-shadow: 0 2px 8px rgba(25, 118, 210, 0.1);
+}
+
+.tag-checkbox {
+    margin: 0 !important;
+}
+
+.tag-checkbox label {
+    font-size: 14px !important;
+    color: #2c3e50 !important;
+}
+
+.tag-checkbox label span {
+    font-weight: normal !important;
+}
+
+.category-header {
+    margin-top: 20px !important;
+    margin-bottom: 10px !important;
+    color: #1976d2 !important;
+    font-size: 1.3em !important;
+    border-bottom: 2px solid #e0e0e0;
+    padding-bottom: 5px;
+}
+
+.stats-badge {
+    background: #e3f2fd;
+    color: #1976d2;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    margin-left: 10px;
+}
 """
 
-# 注意：将 css 参数移到 launch() 方法中
-with gr.Blocks() as demo:
+def create_checkbox_for_tag(tag_en, tag_cn):
+    """为标签创建复选框组件"""
+    # 提取主要中文描述（括号前的内容）
+    main_cn = tag_cn.split(' (')[0] if ' (' in tag_cn else tag_cn
+    return gr.Checkbox(
+        label=f"**{tag_en}** — {main_cn}",
+        value=False,
+        elem_classes=["tag-checkbox"],
+        elem_id=f"checkbox_{tag_en}"
+    )
+
+with gr.Blocks(css=css, title="NotaGen - 标签条件生成") as demo:
     gr.HTML(title_html)
     pdf_state = gr.State()
     
-    # 隐藏的文本框，用于存储选中的标签字符串
-    tag_input_hidden = gr.Textbox(
-        value="",
-        visible=False,
-        elem_id="tag-input-hidden"
-    )
+    tag_input_hidden = gr.Textbox(value="", visible=False, elem_id="tag-input-hidden")
 
     with gr.Column():
-        # === 修改后的标签参考区域 ===
-        gr.Markdown("### 🏷️ 选择标签（最多选择12个）")
+        gr.Markdown("### 🏷️ 选择标签（最多选择4个）")
         
-        # 标签限制提示
         gr.Markdown("""
         <div class="tag-limit-hint">
-        ⚠️ 最多可以选择12个标签。超过12个时，将自动选择前12个。
+        ⚠️ 最多可以选择4个标签。
         </div>
         """)
         
-        # 创建所有复选框
+        # 添加新版标签库说明和统计
+        with gr.Row():
+            gr.Markdown(f"""
+            <div style="background: #f0f7ff; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                <p style="margin: 0 0 10px 0; color: #1976d2; font-weight: bold;">✨ 新版标签库（共36个标签）</p>
+                <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                    <span class="stats-badge">🎵 流派: 13个</span>
+                    <span class="stats-badge">🎻 乐器: 9个</span>
+                    <span class="stats-badge">😊 情绪: 9个</span>
+                    <span class="stats-badge">⏱️ 速度: 5个</span>
+                </div>
+            </div>
+            """)
+        
         checkbox_components = []
         
-        # 按类别创建复选框
+        # 遍历所有类别生成复选框
         for category, tags in TAG_CATEGORIES.items():
-            with gr.Group():
-                gr.Markdown(f"#### {category}")
-                with gr.Row():
-                    for i, (tag_en, tag_cn) in enumerate(tags.items()):
-                        if i % 6 == 0 and i > 0:
-                            gr.Markdown("", visible=False)  # 换行占位符
-                        checkbox = gr.Checkbox(
-                            label=f"**{tag_en}** ({tag_cn})",
-                            value=False,
-                            elem_classes=["tag-checkbox"],
-                            elem_id=f"checkbox_{tag_en}"
-                        )
+            gr.Markdown(f"#### {category}", elem_classes=["category-header"])
+            
+            # 使用网格布局显示标签
+            with gr.Column(elem_classes=["tag-grid"]):
+                for tag_en, tag_cn in tags.items():
+                    with gr.Column(elem_classes=["tag-item"]):
+                        checkbox = create_checkbox_for_tag(tag_en, tag_cn)
                         checkbox_components.append(checkbox)
         
-        # 选中的标签显示区域
+        # 验证复选框数量与标签数量一致
+        assert len(checkbox_components) == len(ALL_TAGS), f"Length mismatch: {len(checkbox_components)} vs {len(ALL_TAGS)}"
+        
         tag_display = gr.HTML(
             value="<div id='tag-display' style='min-height: 60px; padding: 10px; background: #f9f9f9; border-radius: 8px;'></div>",
             elem_id="tag-display"
         )
         
-        # 生成按钮
-        generate_btn = gr.Button("Generate Music", variant="primary", size="lg")
-        
-        # 清空选择按钮
         with gr.Row():
-            clear_btn = gr.Button("Clear Selection", variant="secondary", elem_classes="clear-tags-btn")
+            generate_btn = gr.Button("🎵 Generate Music", variant="primary", size="lg", scale=2)
+            clear_btn = gr.Button("🗑️ Clear Selection", variant="secondary", elem_classes="clear-tags-btn", scale=1)
         
         process_output = gr.Textbox(
             label="Generation process",
@@ -677,18 +598,8 @@ with gr.Blocks() as demo:
         )
 
         with gr.Row():
-            prev_btn = gr.Button(
-                "⬅️ Last Page",
-                variant="secondary",
-                size="sm",
-                elem_classes="page-btn"
-            )
-            next_btn = gr.Button(
-                "Next Page ➡️",
-                variant="secondary",
-                size="sm",
-                elem_classes="page-btn"
-            )
+            prev_btn = gr.Button("⬅️ Last Page", variant="secondary", size="sm", elem_classes="page-btn")
+            next_btn = gr.Button("Next Page ➡️", variant="secondary", size="sm", elem_classes="page-btn")
 
     with gr.Column():
         gr.Markdown("**Download Files:**")
@@ -699,26 +610,21 @@ with gr.Blocks() as demo:
             type="filepath"
         )
 
-    # 定义清空选择按钮的功能
     def clear_all_checkboxes():
-        # 返回所有复选框的False值
         return [False] * len(checkbox_components), "", "<div id='tag-display' style='min-height: 60px; padding: 10px; background: #f9f9f9; border-radius: 8px;'></div>"
     
-    # 复选框变化时更新显示
     for checkbox in checkbox_components:
         checkbox.change(
             update_selected_tags,
-            inputs=checkbox_components,  # 传入所有复选框的状态
+            inputs=checkbox_components,
             outputs=[tag_display, tag_input_hidden]
         )
     
-    # 清空按钮点击事件
     clear_btn.click(
         clear_all_checkboxes,
         outputs=checkbox_components + [tag_input_hidden, tag_display]
     )
     
-    # 生成按钮点击事件（使用隐藏的标签输入）
     generate_btn.click(
         generate_music_from_tags,
         inputs=[tag_input_hidden],
@@ -732,11 +638,21 @@ with gr.Blocks() as demo:
     next_btn.click(update_page, inputs=[next_signal, pdf_state], outputs=[pdf_image, prev_btn, next_btn, pdf_state])
 
 if __name__ == "__main__":
-    print("Starting NotaGen tag-based generation server locally...")
+    print("=" * 60)
+    print("Starting NotaGen tag-based generation server...")
+    print("=" * 60)
     print(f"Access the application at: http://localhost:7860")
+    print(f"\n📊 New Tag Library Statistics:")
+    print(f"   ├─ 🎵 Genre: {len(GENRE_LABELS)} tags")
+    print(f"   ├─ 🎻 Instrument: {len(INSTRUMENT_LABELS)} tags")
+    print(f"   ├─ 😊 Emotion: {len(EMOTION_LABELS)} tags")
+    print(f"   └─ ⏱️ Tempo: {len(TEMPO_LABELS)} tags")
+    print(f"\n📌 Total: {len(ALL_TAGS)} tags available for generation")
+    print("=" * 60)
+    
     demo.launch(
         server_name="127.0.0.1",
         server_port=7860,
         share=False,
-        css=css  # 将 css 参数移到这里
+        css=css
     )
