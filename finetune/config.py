@@ -1,8 +1,8 @@
 import os
 
 # Configuration for the data
-DATA_TRAIN_INDEX_PATH = "" 
-DATA_EVAL_INDEX_PATH  = ""
+DATA_TRAIN_INDEX_PATH = r"C:\Users\Administrator\NotaGen\data\augmented_abc_train.jsonl" 
+DATA_EVAL_INDEX_PATH  = r"C:\Users\Administrator\NotaGen\data\augmented_abc_eval.jsonl"
 
 # Configuration for the model
 PATCH_STREAM = True                                             # Stream training / inference
@@ -13,17 +13,17 @@ PATCH_NUM_LAYERS = 20                                           # Number of laye
 HIDDEN_SIZE = 1280                                               # Hidden Size
 
 # Configuration for the training
-BATCH_SIZE = 1         
-LEARNING_RATE = 1e-5   
-NUM_EPOCHS = 64                                                 # Number of epochs to train for (if early stopping doesn't intervene)
-ACCUMULATION_STEPS = 1                                          # Accumulation steps to simulate large batch size
+BATCH_SIZE = 4         
+LEARNING_RATE = 5e-6   
+NUM_EPOCHS = 5                                                 # Number of epochs to train for (if early stopping doesn't intervene)
+ACCUMULATION_STEPS = 4                                          # Accumulation steps to simulate large batch size
 PATCH_SAMPLING_BATCH_SIZE = 0                                   # Batch size for patch during training, 0 for full conaudio
 LOAD_FROM_CHECKPOINT = False                                    # Whether to load weights from a checkpoint
 WANDB_LOGGING = False                                           # Whether to log to wandb
 WANDB_KEY = '<your_wandb_key>'
 
-PRETRAINED_PATH = ""                # Path of pretrained weights
-EXP_TAG = ''                                            # Experiment tag for name differentiation
+PRETRAINED_PATH = r"C:\Users\Administrator\NotaGen\finetune\weights_notagenx_p_size_16_p_length_1024_p_layers_20_h_size_1280.pth"
+EXP_TAG = 'finetune3'                                            # Experiment tag for name differentiation
 NAME =  EXP_TAG + \
         "_p_size_" + str(PATCH_SIZE) + \
         "_p_length_" + str(PATCH_LENGTH) + \
